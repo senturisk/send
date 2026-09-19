@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="squircleBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F7F3FC" />
+      <stop offset="100%" stop-color="#F2EBFA" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded squircle background from Sen_Send_logo.png -->
+  <rect x="24" y="24" width="464" height="464" rx="112" ry="112" fill="url(#squircleBg)" />
+  
+  <!-- Network triangle connector struts -->
+  <polygon points="256,146 364,334 148,334" fill="none" stroke="#742E99" stroke-width="32" stroke-linecap="round" stroke-linejoin="round" />
+  
+  <!-- Vertices nodes -->
+  <circle cx="256" cy="146" r="44" fill="#742E99" />
+  <circle cx="148" cy="334" r="44" fill="#742E99" />
+  <circle cx="364" cy="334" r="44" fill="#742E99" />
+</svg>

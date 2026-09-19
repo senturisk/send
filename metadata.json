@@ -1,0 +1,6 @@
+{
+  "name": "Sen Send",
+  "description": "Universal peer-to-peer file sharing and chat platform by Senturisk featuring real-time WebRTC transfer, QR code scanning, and desktop bridge mode.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
