@@ -1,12 +1,13 @@
 /**
  * WebRTC P2P Data Channel & Transfer Manager for Sen Send (Senturisk)
- * Powered by PeerJS with Google STUN servers and resilient room presence
+ * Default PeerJS architecture with zero custom ID systems and direct WebRTC channels
  */
 
 import { Peer, DataConnection } from "peerjs";
 import { FileMetadata, FileTransferProgress } from "../types";
 
 export interface TransferCallbacks {
+  onMyPeerId?: (peerId: string) => void;
   onPeerConnected?: (peerId: string, peerName?: string, deviceType?: any) => void;
   onPeerDisconnected?: (peerId: string) => void;
   onPeerUpdated?: (peerId: string, peerName: string) => void;
@@ -40,7 +41,6 @@ export class P2PConnectionManager {
   private peerId: string;
   private peerName: string;
   private roomId: string;
-  private peerJsId: string;
 
   private peer: Peer | null = null;
   private connections = new Map<string, DataConnection>();
@@ -59,21 +59,17 @@ export class P2PConnectionManager {
   private destroyed = false;
 
   constructor(
-    peerId: string,
+    initialPeerId: string,
     peerName: string,
     roomId: string,
     callbacks: TransferCallbacks
   ) {
-    this.peerId = peerId;
+    this.peerId = initialPeerId;
     this.peerName = peerName;
     this.roomId = roomId;
     this.callbacks = callbacks;
 
-    const cleanRoom = this.roomId.replace(/[^a-zA-Z0-9_-]/g, "");
-    const cleanPeer = this.peerId.replace(/[^a-zA-Z0-9_-]/g, "");
-    this.peerJsId = `sensend_${cleanRoom}_${cleanPeer}`;
-
-    // Local multi-tab / offline BroadcastChannel
+    // Local multi-tab / offline BroadcastChannel fallback
     try {
       this.broadcastChannel = new BroadcastChannel(`sensend_room_${roomId}`);
       this.broadcastChannel.onmessage = (event) => {
@@ -84,25 +80,33 @@ export class P2PConnectionManager {
     }
   }
 
+  public getPeerId(): string {
+    return this.peerId;
+  }
+
   public setCallbacks(callbacks: TransferCallbacks) {
     this.callbacks = { ...this.callbacks, ...callbacks };
   }
 
   /**
-   * Initialize PeerJS and connect to room presence
+   * Initialize default PeerJS (NO custom ID parameters - relies on PeerJS broker)
    */
   public connectSignaling(_wsUrl?: string) {
     if (this.destroyed || this.peer) return;
 
     try {
-      this.peer = new Peer(this.peerJsId, {
+      // Default PeerJS initialization without custom ID parameter
+      this.peer = new Peer({
         debug: 1,
         config: {
           iceServers: ICE_SERVERS,
         },
       });
 
-      this.peer.on("open", (_id) => {
+      this.peer.on("open", (assignedId: string) => {
+        this.peerId = assignedId;
+        this.callbacks.onMyPeerId?.(assignedId);
+
         this.joinRoomPresence();
         this.startPresenceHeartbeat();
         this.startPingLoop();
@@ -116,18 +120,14 @@ export class P2PConnectionManager {
         });
       });
 
+      // Handle incoming connections from any peer
       this.peer.on("connection", (conn: DataConnection) => {
-        this.setupDataConnection(conn);
+        this.setupDataConnection(conn, conn.peer);
       });
 
       this.peer.on("error", (err: any) => {
-        // Handle peer-unavailable silently as peers leave and join dynamically
         if (err.type === "peer-unavailable") {
-          return;
-        }
-        if (err.type === "unavailable-id") {
-          // If ID collision, reconnect with randomized suffix
-          console.warn("PeerJS ID already active, generating fresh instance");
+          // Normal when a peer disconnects or leaves
           return;
         }
         console.warn("PeerJS notice:", err?.type || err);
@@ -143,7 +143,7 @@ export class P2PConnectionManager {
         }
       });
     } catch (err: any) {
-      console.warn("PeerJS initialization notice:", err);
+      console.warn("PeerJS initialization error:", err);
     }
   }
 
@@ -158,30 +158,24 @@ export class P2PConnectionManager {
   }
 
   /**
-   * Connect to another peer in the room via PeerJS
+   * Connect to another peer directly using their default PeerJS ID
    */
-  private connectToPeer(
+  public connectToPeer(
     remotePeerId: string,
     remotePeerName?: string,
     remoteDeviceType?: any
   ) {
-    if (remotePeerId === this.peerId || this.connections.has(remotePeerId) || !this.peer) {
+    if (!remotePeerId || remotePeerId === this.peerId || this.connections.has(remotePeerId)) {
+      return;
+    }
+    if (!this.peer || this.peer.destroyed) {
       return;
     }
 
-    const cleanRoom = this.roomId.replace(/[^a-zA-Z0-9_-]/g, "");
-    const cleanRemotePeer = remotePeerId.replace(/[^a-zA-Z0-9_-]/g, "");
-    const targetPeerJsId = `sensend_${cleanRoom}_${cleanRemotePeer}`;
-
     try {
-      const conn = this.peer.connect(targetPeerJsId, {
+      // Default PeerJS connect with reliable data transfer
+      const conn = this.peer.connect(remotePeerId, {
         reliable: true,
-        metadata: {
-          peerId: this.peerId,
-          peerName: this.peerName,
-          deviceType: this.detectDeviceType(),
-          roomId: this.roomId,
-        },
       });
 
       if (remotePeerName) {
@@ -193,7 +187,7 @@ export class P2PConnectionManager {
 
       this.setupDataConnection(conn, remotePeerId, remotePeerName, remoteDeviceType);
     } catch (err) {
-      console.warn("Peer connection error to " + remotePeerId, err);
+      console.warn("Error connecting to peer " + remotePeerId, err);
     }
   }
 
@@ -202,11 +196,11 @@ export class P2PConnectionManager {
    */
   private setupDataConnection(
     conn: DataConnection,
-    expectedPeerId?: string,
+    remotePeerId?: string,
     expectedName?: string,
     expectedDevice?: any
   ) {
-    let resolvedPeerId = expectedPeerId || "";
+    let resolvedPeerId = remotePeerId || conn.peer;
 
     const onOpen = () => {
       // Send immediate handshake with our credentials
@@ -326,9 +320,11 @@ export class P2PConnectionManager {
   }
 
   /**
-   * HTTP Room Presence - Join
+   * HTTP Room Presence - Join room to exchange PeerJS IDs
    */
   private async joinRoomPresence() {
+    if (!this.peerId) return;
+
     try {
       const res = await fetch(`/api/room/${encodeURIComponent(this.roomId)}/join`, {
         method: "POST",
@@ -350,18 +346,18 @@ export class P2PConnectionManager {
         }
       }
     } catch (err) {
-      console.warn("Room presence join error:", err);
+      console.warn("Room presence join notice:", err);
     }
   }
 
   /**
-   * HTTP Room Presence - Periodic heartbeat & discovery
+   * HTTP Room Presence - Periodic heartbeat & peer discovery
    */
   private startPresenceHeartbeat() {
     if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
 
     this.heartbeatInterval = setInterval(async () => {
-      if (this.destroyed) return;
+      if (this.destroyed || !this.peerId) return;
       try {
         const res = await fetch(
           `/api/room/${encodeURIComponent(this.roomId)}/heartbeat`,
@@ -544,7 +540,7 @@ export class P2PConnectionManager {
     };
 
     this.activeTransfers.set(fileId, progress);
-    this.callbacks.onFileProgress?.(progress);
+    this.callbacks.onFileProgress?.({ ...progress });
 
     if (isDone) {
       const validChunks = assembly.chunks.filter(Boolean) as ArrayBuffer[];
@@ -599,7 +595,7 @@ export class P2PConnectionManager {
   }
 
   /**
-   * Send a file to all peers in the room
+   * Send a file to all connected peers
    */
   public async sendFile(file: File): Promise<string> {
     const fileId =
@@ -799,11 +795,13 @@ export class P2PConnectionManager {
     if (this.pingInterval) clearInterval(this.pingInterval);
 
     // Notify room server of departure
-    fetch(`/api/room/${encodeURIComponent(this.roomId)}/leave`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ peerId: this.peerId }),
-    }).catch(() => {});
+    if (this.peerId) {
+      fetch(`/api/room/${encodeURIComponent(this.roomId)}/leave`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ peerId: this.peerId }),
+      }).catch(() => {});
+    }
 
     // Close all PeerJS connections
     for (const conn of this.connections.values()) {

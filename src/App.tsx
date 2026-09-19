@@ -38,7 +38,7 @@ export default function App() {
   // User & device identity
   const userConfig = useRef(getStoredUserConfig()).current;
   const [peerName, setPeerName] = useState(userConfig.peerName);
-  const [peerId] = useState(userConfig.peerId);
+  const [peerId, setPeerId] = useState(userConfig.peerId);
   const [deviceType] = useState<DeviceType>(userConfig.deviceType);
 
   // Room state & query parameters (?room=...)
@@ -57,6 +57,7 @@ export default function App() {
   });
 
   const [inputNewRoom, setInputNewRoom] = useState("");
+  const [inputDirectPeerId, setInputDirectPeerId] = useState("");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [serverPing, setServerPing] = useState(0);
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -157,6 +158,16 @@ export default function App() {
     });
 
     const manager = new P2PConnectionManager(peerId, peerName, roomId, {
+      onMyPeerId: (assignedId) => {
+        setPeerId(assignedId);
+        setConnectionState("connected");
+        const params = new URLSearchParams(window.location.search);
+        const directConnect = params.get("connect") || params.get("peer");
+        if (directConnect && directConnect !== assignedId) {
+          manager.connectToPeer(directConnect.trim());
+          notify("Connecting", "Connecting directly to peer...", "info");
+        }
+      },
       onPeerConnected: (connectedPeerId, connectedPeerName, peerDevType) => {
         const dName = connectedPeerName || `Peer-${connectedPeerId.slice(0, 4)}`;
         setPeers((prev) => {
@@ -315,7 +326,7 @@ export default function App() {
     return () => {
       manager.destroy();
     };
-  }, [roomId, peerId, peerName]);
+  }, [roomId]);
 
   // Clean stale typing indicators
   useEffect(() => {
@@ -493,14 +504,14 @@ export default function App() {
             <SolarIcon name="alt-arrow-down-bold-duotone" className="w-3 h-3 text-slate-400" />
           </button>
 
-          {/* Quick Room Switcher Popover */}
+          {/* Quick Room Switcher & Direct Peer Connect Popover */}
           {showRoomSwitchPopover && (
             <div
-              className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-64 p-3 rounded-2xl bg-white border border-slate-200 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150"
+              className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-72 p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150"
               onClick={(e) => e.stopPropagation()}
             >
-              <form onSubmit={handleRoomSwitch} className="space-y-2">
-                <div className="text-xs font-semibold text-slate-700">Switch Room</div>
+              <form onSubmit={handleRoomSwitch} className="space-y-1.5">
+                <div className="text-xs font-semibold text-slate-700">Room Code</div>
                 <div className="flex gap-1.5">
                   <input
                     type="text"
@@ -512,28 +523,74 @@ export default function App() {
                   />
                   <button
                     type="submit"
-                    className="px-3 py-1.5 rounded-xl bg-[#0B57D0] text-white text-xs font-medium"
+                    className="px-3 py-1.5 rounded-xl bg-[#0B57D0] text-white text-xs font-medium hover:bg-[#084298]"
                   >
-                    Go
+                    Switch
                   </button>
                 </div>
               </form>
 
-              <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
-                <span className="text-slate-400 font-mono">Invite Link</span>
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(
-                      `${window.location.origin}/?room=${encodeURIComponent(roomId)}`
-                    );
-                    setShowRoomSwitchPopover(false);
-                    notify("Link Copied", "Share with nearby peers", "info");
-                  }}
-                  className="text-[#0B57D0] font-medium hover:underline flex items-center gap-1"
-                >
-                  <SolarIcon name="copy-bold-duotone" className="w-3 h-3" />
-                  Copy
-                </button>
+              {/* Direct Connect by Peer ID */}
+              <div className="mt-3 pt-2.5 border-t border-slate-100">
+                <div className="text-xs font-semibold text-slate-700 mb-1.5">Direct Connect by Peer ID</div>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    placeholder="Paste Peer ID..."
+                    value={inputDirectPeerId}
+                    onChange={(e) => setInputDirectPeerId(e.target.value)}
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (inputDirectPeerId.trim()) {
+                        p2pRef.current?.connectToPeer(inputDirectPeerId.trim());
+                        setInputDirectPeerId("");
+                        setShowRoomSwitchPopover(false);
+                        notify("Connecting", "Initiating direct WebRTC link...", "info");
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 text-white text-xs font-medium hover:bg-slate-900"
+                  >
+                    Connect
+                  </button>
+                </div>
+              </div>
+
+              {/* My Peer ID & Invite Link */}
+              <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-1.5 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-mono">My Peer ID</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(peerId);
+                      notify("Copied", "Peer ID copied to clipboard", "info");
+                    }}
+                    className="text-slate-700 font-mono bg-slate-100 px-2 py-0.5 rounded text-[10px] hover:bg-slate-200 flex items-center gap-1 max-w-[130px] truncate"
+                    title="Copy your Peer ID"
+                  >
+                    <span className="truncate">{peerId || "Generating..."}</span>
+                    <SolarIcon name="copy-bold-duotone" className="w-3 h-3 text-slate-500 shrink-0" />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400 font-mono">Room Link</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(
+                        `${window.location.origin}/?room=${encodeURIComponent(roomId)}`
+                      );
+                      setShowRoomSwitchPopover(false);
+                      notify("Link Copied", "Share with nearby peers", "info");
+                    }}
+                    className="text-[#0B57D0] font-medium hover:underline flex items-center gap-1"
+                  >
+                    <SolarIcon name="copy-bold-duotone" className="w-3 h-3" />
+                    Copy
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -699,20 +756,44 @@ export default function App() {
         isOpen={showScannerModal}
         onClose={() => setShowScannerModal(false)}
         onScanned={(scannedText) => {
-          let target = scannedText.trim().toUpperCase();
+          const raw = scannedText.trim();
+          let directPeerId = "";
+          let roomTarget = "";
+
           try {
-            const url = new URL(scannedText);
-            const r = url.searchParams.get("room") || url.searchParams.get("join");
-            if (r) {
-              target = r.trim().toUpperCase();
+            const url = new URL(raw);
+            const connectParam = url.searchParams.get("connect") || url.searchParams.get("peer");
+            if (connectParam) {
+              directPeerId = connectParam.trim();
             }
-          } catch {}
-          if (target.startsWith("SEN-")) target = "S-" + target.slice(4);
-          else if (!target.startsWith("S-")) target = "S-" + target;
-          setRoomId(target);
-          setShowScannerModal(false);
-          setShowNamePrompt(true);
-          notify("Connected", `Joined room ${target}`, "success");
+            const roomParam = url.searchParams.get("room") || url.searchParams.get("join");
+            if (roomParam) {
+              roomTarget = roomParam.trim().toUpperCase();
+            }
+          } catch {
+            // Not a full URL - could be direct Peer ID or Room code
+            if (raw.length > 20 && !raw.startsWith("S-") && !raw.startsWith("SEN-")) {
+              directPeerId = raw;
+            } else {
+              roomTarget = raw.toUpperCase();
+            }
+          }
+
+          if (directPeerId) {
+            p2pRef.current?.connectToPeer(directPeerId);
+            setShowScannerModal(false);
+            notify("Direct Connected", `Connecting to peer ${directPeerId.slice(0, 6)}...`, "success");
+            return;
+          }
+
+          if (roomTarget) {
+            if (roomTarget.startsWith("SEN-")) roomTarget = "S-" + roomTarget.slice(4);
+            else if (!roomTarget.startsWith("S-")) roomTarget = "S-" + roomTarget;
+            setRoomId(roomTarget);
+            setShowScannerModal(false);
+            setShowNamePrompt(true);
+            notify("Connected", `Joined room ${roomTarget}`, "success");
+          }
         }}
         onErrorNotice={(title, msg) => notify(title, msg, "error")}
       />
