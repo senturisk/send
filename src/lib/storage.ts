@@ -197,7 +197,7 @@ export async function loadRoomMessages(roomId: string): Promise<ChatMessage[]> {
 }
 
 /**
- * Generate a clean, random 4-6 digit alphanumeric string
+ * Generate a clean, random alphanumeric peer ID / room code
  */
 export function generateAlphanumericCode(minLen: number = 4, maxLen: number = 6): string {
   const chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // High contrast, avoids confusing 0/O and 1/I
@@ -210,10 +210,10 @@ export function generateAlphanumericCode(minLen: number = 4, maxLen: number = 6)
 }
 
 /**
- * Generate room code with S- prefix
+ * Generate room code which is a peer ID
  */
 export function generateRoomCode(): string {
-  return "S-" + generateAlphanumericCode(4, 5);
+  return generateAlphanumericCode(6, 8);
 }
 
 /**

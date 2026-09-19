@@ -35,11 +35,14 @@ export const PhoneBridgeModal: React.FC<PhoneBridgeModalProps> = ({
   const extractRoomOrPeer = (scannedText: string): { roomId?: string; peerId?: string } => {
     try {
       const url = new URL(scannedText);
-      const room = url.searchParams.get("room");
-      const peer = url.searchParams.get("peer");
-      return { roomId: room || undefined, peerId: peer || undefined };
+      const target =
+        url.searchParams.get("room") ||
+        url.searchParams.get("connect") ||
+        url.searchParams.get("peer") ||
+        url.searchParams.get("join");
+      return { roomId: target || undefined, peerId: target || undefined };
     } catch {
-      return { roomId: scannedText };
+      return { roomId: scannedText.trim(), peerId: scannedText.trim() };
     }
   };
 

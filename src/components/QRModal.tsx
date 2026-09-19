@@ -17,41 +17,40 @@ export const QRModal: React.FC<QRModalProps> = ({
   peerId,
   onCopyNotice,
 }) => {
-  const [tab, setTab] = useState<"room" | "peer">("room");
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [copiedLink, setCopiedLink] = useState(false);
-  const [copiedPeerId, setCopiedPeerId] = useState(false);
+  const [copiedCode, setCopiedCode] = useState(false);
 
-  const roomUrl = `${window.location.origin}/?room=${encodeURIComponent(roomId)}`;
-  const peerUrl = `${window.location.origin}/?connect=${encodeURIComponent(peerId)}`;
-  const activeUrl = tab === "room" ? roomUrl : peerUrl;
+  // Room code is the peer ID
+  const activeCode = roomId || peerId;
+  const roomUrl = `${window.location.origin}/?room=${encodeURIComponent(activeCode)}`;
 
   useEffect(() => {
-    if (isOpen && activeUrl) {
-      generateQRCode(activeUrl, {
+    if (isOpen && activeCode) {
+      generateQRCode(roomUrl, {
         width: 280,
-        darkColor: tab === "room" ? "#0B57D0" : "#0F172A",
+        darkColor: "#0B57D0",
         lightColor: "#ffffff",
       })
         .then((url) => setQrDataUrl(url))
         .catch(() => {});
     }
-  }, [isOpen, activeUrl, tab]);
+  }, [isOpen, activeCode, roomUrl]);
 
   if (!isOpen) return null;
 
   const handleCopyLink = () => {
-    navigator.clipboard.writeText(activeUrl);
+    navigator.clipboard.writeText(roomUrl);
     setCopiedLink(true);
-    onCopyNotice(tab === "room" ? "Room invite link copied" : "Direct P2P connect link copied");
+    onCopyNotice("Room invite link copied to clipboard");
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const handleCopyPeerId = () => {
-    navigator.clipboard.writeText(peerId);
-    setCopiedPeerId(true);
-    onCopyNotice("Peer ID copied");
-    setTimeout(() => setCopiedPeerId(false), 2000);
+  const handleCopyCode = () => {
+    navigator.clipboard.writeText(activeCode);
+    setCopiedCode(true);
+    onCopyNotice("Peer ID room code copied");
+    setTimeout(() => setCopiedCode(false), 2000);
   };
 
   return (
@@ -77,40 +76,14 @@ export const QRModal: React.FC<QRModalProps> = ({
         </div>
 
         <h3 className="font-semibold text-slate-800 text-base mb-1">
-          Scan to Connect
+          Scan to Join Room
         </h3>
-        <p className="text-xs text-slate-500 mb-3 text-center">
-          Open your camera or Sen Send scanner to connect instantly
+        <p className="text-xs text-slate-500 mb-4 text-center">
+          Open your camera or Sen Send scanner to connect to this peer instantly
         </p>
 
-        {/* Tab switch: Room vs Direct Peer */}
-        <div className="flex bg-slate-100 p-1 rounded-full w-full mb-3.5">
-          <button
-            type="button"
-            onClick={() => setTab("room")}
-            className={`flex-1 py-1 text-xs font-medium rounded-full transition-all ${
-              tab === "room"
-                ? "bg-white text-slate-900 shadow-xs"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            Room ({roomId})
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("peer")}
-            className={`flex-1 py-1 text-xs font-medium rounded-full transition-all ${
-              tab === "peer"
-                ? "bg-white text-slate-900 shadow-xs"
-                : "text-slate-500 hover:text-slate-800"
-            }`}
-          >
-            Direct Peer
-          </button>
-        </div>
-
         {/* QR Code Presentation Box */}
-        <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 mb-3 shadow-xs">
+        <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 mb-4 shadow-xs">
           {qrDataUrl ? (
             <img
               src={qrDataUrl}
@@ -124,36 +97,32 @@ export const QRModal: React.FC<QRModalProps> = ({
           )}
         </div>
 
-        {/* Info detail */}
-        {tab === "room" ? (
-          <div className="flex items-center gap-2 mb-4">
-            <span className="text-xs text-slate-500">Room Code:</span>
-            <span className="font-mono text-xs font-semibold text-slate-800 bg-slate-100 px-2.5 py-1 rounded-full">
-              {roomId}
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1.5 mb-4 max-w-full px-2">
-            <span className="text-xs text-slate-500 shrink-0">Peer ID:</span>
-            <span
-              onClick={handleCopyPeerId}
-              className="font-mono text-[11px] text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full truncate cursor-pointer hover:bg-slate-200 transition-colors"
-              title="Click to copy Peer ID"
+        {/* Room Code = Peer ID */}
+        <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-3 mb-4 flex items-center justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] uppercase font-semibold tracking-wider text-slate-400">
+              Room Code (Peer ID)
+            </div>
+            <div
+              onClick={handleCopyCode}
+              className="font-mono text-xs font-semibold text-slate-800 truncate cursor-pointer hover:text-[#0B57D0] transition-colors"
+              title="Click to copy"
             >
-              {peerId || "Generating..."}
-            </span>
-            <button
-              onClick={handleCopyPeerId}
-              className="p-1 text-slate-400 hover:text-slate-700 rounded-full"
-              title="Copy Peer ID"
-            >
-              <SolarIcon
-                name={copiedPeerId ? "check-circle-bold-duotone" : "copy-bold-duotone"}
-                className="w-3.5 h-3.5 text-[#0B57D0]"
-              />
-            </button>
+              {activeCode || "Generating..."}
+            </div>
           </div>
-        )}
+          <button
+            type="button"
+            onClick={handleCopyCode}
+            className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-[#0B57D0] hover:bg-slate-100 transition-colors shrink-0 shadow-xs"
+            title="Copy Peer ID Room Code"
+          >
+            <SolarIcon
+              name={copiedCode ? "check-circle-bold-duotone" : "copy-bold-duotone"}
+              className={`w-4 h-4 ${copiedCode ? "text-emerald-600" : ""}`}
+            />
+          </button>
+        </div>
 
         {/* Action Button */}
         <button
@@ -165,7 +134,7 @@ export const QRModal: React.FC<QRModalProps> = ({
             name={copiedLink ? "check-circle-bold-duotone" : "link-bold-duotone"}
             className="w-4 h-4 text-white"
           />
-          <span>{copiedLink ? "Link Copied" : tab === "room" ? "Copy Room Link" : "Copy Direct P2P Link"}</span>
+          <span>{copiedLink ? "Link Copied!" : "Copy Room Link"}</span>
         </button>
       </div>
     </div>

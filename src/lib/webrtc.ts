@@ -107,6 +107,11 @@ export class P2PConnectionManager {
         this.peerId = assignedId;
         this.callbacks.onMyPeerId?.(assignedId);
 
+        // If room code was specified and is another peer's ID, connect directly!
+        if (this.roomId && this.roomId !== assignedId) {
+          this.connectToPeer(this.roomId);
+        }
+
         this.joinRoomPresence();
         this.startPresenceHeartbeat();
         this.startPingLoop();
@@ -276,6 +281,24 @@ export class P2PConnectionManager {
         peerName || `Peer-${peerId.slice(0, 4)}`,
         deviceType || "desktop"
       );
+
+      // Share existing peers with newly connected peer for mesh connectivity
+      const otherPeers = Array.from(this.peerMeta.entries())
+        .filter(([id]) => id !== peerId && id !== this.peerId)
+        .map(([id, m]) => ({ peerId: id, peerName: m.peerName, deviceType: m.deviceType }));
+      if (otherPeers.length > 0) {
+        try {
+          conn.send({ type: "mesh_peer_list", peers: otherPeers });
+        } catch (e) {}
+      }
+    } else if (type === "mesh_peer_list") {
+      if (Array.isArray(data.peers)) {
+        for (const p of data.peers) {
+          if (p.peerId && p.peerId !== this.peerId && !this.connections.has(p.peerId)) {
+            this.connectToPeer(p.peerId, p.peerName, p.deviceType);
+          }
+        }
+      }
     } else if (type === "chat_message") {
       this.callbacks.onChatMessage?.(data.message);
     } else if (type === "typing") {
