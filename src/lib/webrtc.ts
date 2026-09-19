@@ -11,6 +11,7 @@ export interface TransferCallbacks {
   onPeerConnected?: (peerId: string, peerName?: string, deviceType?: any) => void;
   onPeerDisconnected?: (peerId: string) => void;
   onPeerUpdated?: (peerId: string, peerName: string) => void;
+  onPeerUnavailable?: (peerId: string) => void;
   onChatMessage?: (message: any) => void;
   onFileStart?: (fileMeta: FileMetadata) => void;
   onFileProgress?: (progress: FileTransferProgress) => void;
@@ -97,7 +98,7 @@ export class P2PConnectionManager {
     try {
       // Default PeerJS initialization without custom ID parameter
       this.peer = new Peer({
-        debug: 1,
+        debug: 0,
         config: {
           iceServers: ICE_SERVERS,
         },
@@ -131,11 +132,19 @@ export class P2PConnectionManager {
       });
 
       this.peer.on("error", (err: any) => {
-        if (err.type === "peer-unavailable") {
-          // Normal when a peer disconnects or leaves
+        const errType = err?.type;
+        const msg = String(err?.message || err || "");
+        if (
+          errType === "peer-unavailable" ||
+          errType === "invalid-id" ||
+          msg.includes("Could not connect to peer")
+        ) {
+          // Normal when a peer is offline or disconnected
+          const target = (err as any)?.peer || this.roomId;
+          this.callbacks.onPeerUnavailable?.(target);
           return;
         }
-        console.warn("PeerJS notice:", err?.type || err);
+        console.warn("PeerJS notice:", errType || msg);
       });
 
       this.peer.on("disconnected", () => {

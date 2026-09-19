@@ -53,10 +53,9 @@ export default function App() {
     if (queryRoom) {
       return queryRoom.trim();
     }
-    const saved = localStorage.getItem("sensend_active_room");
-    if (saved && !saved.startsWith("S-") && !saved.startsWith("SEN-")) {
-      return saved;
-    }
+    try {
+      localStorage.removeItem("sensend_active_room");
+    } catch {}
     return "";
   });
 
@@ -106,10 +105,13 @@ export default function App() {
 
   // Sync URL query parameter when room changes
   useEffect(() => {
-    localStorage.setItem("sensend_active_room", roomId);
-    const newUrl = `${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
-    window.history.replaceState({ roomId }, "", newUrl);
-  }, [roomId]);
+    if (roomId && peerId && roomId !== peerId) {
+      const newUrl = `${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+      window.history.replaceState({ roomId }, "", newUrl);
+    } else {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [roomId, peerId]);
 
   // Network online/offline listeners
   useEffect(() => {
@@ -217,6 +219,18 @@ export default function App() {
         setPeers((prev) =>
           prev.map((p) => (p.peerId === updatedPeerId ? { ...p, peerName: newName } : p))
         );
+      },
+
+      onPeerUnavailable: (unavailablePeerId) => {
+        if (unavailablePeerId && unavailablePeerId === roomId && roomId !== peerId) {
+          notify(
+            "Host Offline",
+            "The room host is no longer online. Switched to your own room.",
+            "info"
+          );
+          setRoomId(peerId);
+          window.history.replaceState({}, "", window.location.pathname);
+        }
       },
 
       onPeerDisconnected: (disconnectedPeerId) => {
