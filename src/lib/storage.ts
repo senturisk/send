@@ -122,6 +122,31 @@ export async function deleteVaultFile(id: string): Promise<void> {
 }
 
 /**
+ * Delete messages associated with a file from IndexedDB room history
+ */
+export async function deleteRoomMessageByFileId(fileId: string): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_MESSAGES, "readwrite");
+    const store = tx.objectStore(STORE_MESSAGES);
+
+    const msgs = await new Promise<any[]>((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+
+    for (const msg of msgs) {
+      if (msg.id === fileId || msg.fileMeta?.id === fileId) {
+        store.delete(msg.id);
+      }
+    }
+  } catch (err) {
+    console.warn("Could not delete room messages for file:", err);
+  }
+}
+
+/**
  * Save chat messages for a room
  */
 export async function saveRoomMessage(

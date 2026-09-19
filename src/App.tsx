@@ -16,6 +16,7 @@ import {
 } from "./types";
 import { P2PConnectionManager } from "./lib/webrtc";
 import {
+  deleteRoomMessageByFileId,
   generateRoomCode,
   getStoredUserConfig,
   loadRoomMessages,
@@ -397,6 +398,17 @@ export default function App() {
     setActiveTransfers((prev) => prev.filter((t) => t.fileId !== fileId));
   };
 
+  const handleDeleteVaultFile = async (fileId: string) => {
+    // 1. Remove from in-line chat messages state immediately
+    setMessages((prev) =>
+      prev.filter((msg) => msg.id !== fileId && msg.fileMeta?.id !== fileId)
+    );
+    // 2. Remove any active progress notification if present
+    setActiveTransfers((prev) => prev.filter((t) => t.fileId !== fileId));
+    // 3. Remove from persistent IndexedDB chat history
+    await deleteRoomMessageByFileId(fileId);
+  };
+
   const handleRoomSwitch = (e: React.FormEvent) => {
     e.preventDefault();
     if (inputNewRoom.trim()) {
@@ -727,6 +739,7 @@ export default function App() {
       <FileVaultModal
         isOpen={showVaultModal}
         onClose={() => setShowVaultModal(false)}
+        onDeleteFile={handleDeleteVaultFile}
         onNotify={notify}
       />
 

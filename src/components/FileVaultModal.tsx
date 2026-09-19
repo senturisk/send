@@ -6,12 +6,14 @@ interface FileVaultModalProps {
   isOpen: boolean;
   onClose: () => void;
   onNotify: (title: string, msg: string, type: any) => void;
+  onDeleteFile?: (fileId: string, fileName: string) => void;
 }
 
 export const FileVaultModal: React.FC<FileVaultModalProps> = ({
   isOpen,
   onClose,
   onNotify,
+  onDeleteFile,
 }) => {
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [filter, setFilter] = useState<string>("all");
@@ -59,6 +61,7 @@ export const FileVaultModal: React.FC<FileVaultModalProps> = ({
   const handleDelete = async (id: string, name: string) => {
     await deleteVaultFile(id);
     await refreshVault();
+    onDeleteFile?.(id, name);
     onNotify("File Removed", `Removed ${name} from storage`, "info");
   };
 

@@ -5,12 +5,13 @@ import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 
 interface PeerInfo {
-  ws: WebSocket;
+  ws?: WebSocket;
   peerId: string;
   peerName: string;
   deviceType: "desktop" | "mobile" | "tablet";
   roomId: string;
   joinedAt: number;
+  lastSeen?: number;
   ping: number;
 }
 
@@ -23,6 +24,21 @@ app.use(express.json());
 // In-memory room state
 const rooms = new Map<string, Map<string, PeerInfo>>();
 
+// Periodic cleanup of stale peers (inactive for > 30 seconds)
+setInterval(() => {
+  const now = Date.now();
+  for (const [roomId, room] of rooms.entries()) {
+    for (const [peerId, peer] of room.entries()) {
+      if (!peer.ws && peer.lastSeen && now - peer.lastSeen > 30000) {
+        room.delete(peerId);
+      }
+    }
+    if (room.size === 0) {
+      rooms.delete(roomId);
+    }
+  }
+}, 10000);
+
 // API routes
 app.get("/api/health", (req, res) => {
   res.json({
@@ -33,6 +49,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// Get room details and active peers
 app.get("/api/room/:roomId", (req, res) => {
   const { roomId } = req.params;
   const room = rooms.get(roomId);
@@ -55,6 +72,128 @@ app.get("/api/room/:roomId", (req, res) => {
   });
 });
 
+// Join room via HTTP (for PeerJS discovery)
+app.post("/api/room/:roomId/join", (req, res) => {
+  const { roomId } = req.params;
+  const { peerId, peerName, deviceType } = req.body;
+  if (!roomId || !peerId) {
+    return res.status(400).json({ error: "Missing roomId or peerId" });
+  }
+
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, new Map());
+  }
+  const room = rooms.get(roomId)!;
+
+  const now = Date.now();
+  const peerInfo: PeerInfo = {
+    peerId,
+    peerName: peerName || `Peer-${peerId.slice(0, 4)}`,
+    deviceType: deviceType || "desktop",
+    roomId,
+    joinedAt: now,
+    lastSeen: now,
+    ping: 0,
+  };
+  room.set(peerId, peerInfo);
+
+  // Return all other active peers in this room
+  const otherPeers = Array.from(room.values())
+    .filter((p) => p.peerId !== peerId)
+    .map((p) => ({
+      peerId: p.peerId,
+      peerName: p.peerName,
+      deviceType: p.deviceType,
+      joinedAt: p.joinedAt,
+      ping: p.ping,
+    }));
+
+  return res.json({
+    success: true,
+    roomId,
+    peerId,
+    peers: otherPeers,
+  });
+});
+
+// Room heartbeat to update presence and fetch newly joined peers
+app.post("/api/room/:roomId/heartbeat", (req, res) => {
+  const { roomId } = req.params;
+  const { peerId, peerName, deviceType, ping } = req.body;
+  if (!roomId || !peerId) {
+    return res.status(400).json({ error: "Missing roomId or peerId" });
+  }
+
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, new Map());
+  }
+  const room = rooms.get(roomId)!;
+
+  const now = Date.now();
+  let existing = room.get(peerId);
+  if (existing) {
+    existing.lastSeen = now;
+    if (peerName) existing.peerName = peerName;
+    if (deviceType) existing.deviceType = deviceType;
+    if (typeof ping === "number") existing.ping = ping;
+  } else {
+    existing = {
+      peerId,
+      peerName: peerName || `Peer-${peerId.slice(0, 4)}`,
+      deviceType: deviceType || "desktop",
+      roomId,
+      joinedAt: now,
+      lastSeen: now,
+      ping: ping || 0,
+    };
+    room.set(peerId, existing);
+  }
+
+  const otherPeers = Array.from(room.values())
+    .filter((p) => p.peerId !== peerId)
+    .map((p) => ({
+      peerId: p.peerId,
+      peerName: p.peerName,
+      deviceType: p.deviceType,
+      joinedAt: p.joinedAt,
+      ping: p.ping,
+    }));
+
+  return res.json({
+    success: true,
+    peers: otherPeers,
+  });
+});
+
+// Leave room
+app.post("/api/room/:roomId/leave", (req, res) => {
+  const { roomId } = req.params;
+  const { peerId } = req.body;
+  if (roomId && peerId && rooms.has(roomId)) {
+    const room = rooms.get(roomId)!;
+    room.delete(peerId);
+    if (room.size === 0) {
+      rooms.delete(roomId);
+    }
+  }
+  return res.json({ success: true });
+});
+
+// Update peer name
+app.post("/api/room/:roomId/update_name", (req, res) => {
+  const { roomId } = req.params;
+  const { peerId, peerName } = req.body;
+  if (roomId && peerId && rooms.has(roomId)) {
+    const room = rooms.get(roomId)!;
+    const peer = room.get(peerId);
+    if (peer) {
+      peer.peerName = peerName;
+      peer.lastSeen = Date.now();
+    }
+  }
+  return res.json({ success: true });
+});
+
 // WebSocket signaling server
 const wss = new WebSocketServer({ server, path: "/ws" });
 
@@ -68,7 +207,7 @@ function broadcastToRoom(
 
   const payload = JSON.stringify(message);
   for (const [peerId, peer] of room.entries()) {
-    if (peerId !== excludePeerId && peer.ws.readyState === WebSocket.OPEN) {
+    if (peerId !== excludePeerId && peer.ws && peer.ws.readyState === WebSocket.OPEN) {
       peer.ws.send(payload);
     }
   }
@@ -145,7 +284,7 @@ wss.on("connection", (ws: WebSocket) => {
         const room = rooms.get(currentRoomId);
         if (room && room.has(targetPeerId)) {
           const target = room.get(targetPeerId)!;
-          if (target.ws.readyState === WebSocket.OPEN) {
+          if (target.ws && target.ws.readyState === WebSocket.OPEN) {
             target.ws.send(
               JSON.stringify({
                 type: "signal",
@@ -204,7 +343,7 @@ wss.on("connection", (ws: WebSocket) => {
         if (room) {
           if (targetPeerId) {
             const target = room.get(targetPeerId);
-            if (target && target.ws.readyState === WebSocket.OPEN) {
+            if (target && target.ws && target.ws.readyState === WebSocket.OPEN) {
               target.ws.send(
                 JSON.stringify({
                   type: "file_chunk_relay",
@@ -280,7 +419,7 @@ wss.on("connection", (ws: WebSocket) => {
         if (room) {
           const d1 = room.get(desktop1PeerId);
           const d2 = room.get(desktop2PeerId);
-          if (d1 && d1.ws.readyState === WebSocket.OPEN) {
+          if (d1 && d1.ws && d1.ws.readyState === WebSocket.OPEN) {
             d1.ws.send(
               JSON.stringify({
                 type: "phone_bridge_connect",
@@ -290,7 +429,7 @@ wss.on("connection", (ws: WebSocket) => {
               })
             );
           }
-          if (d2 && d2.ws.readyState === WebSocket.OPEN) {
+          if (d2 && d2.ws && d2.ws.readyState === WebSocket.OPEN) {
             d2.ws.send(
               JSON.stringify({
                 type: "phone_bridge_connect",
