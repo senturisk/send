@@ -21,7 +21,7 @@ export const QRModal: React.FC<QRModalProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  const roomUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+  const roomUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}${peerId ? `&peer=${encodeURIComponent(peerId)}` : ""}`;
 
   useEffect(() => {
     if (isOpen && roomId) {

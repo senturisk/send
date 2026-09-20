@@ -43,28 +43,29 @@ export default function App() {
 
   // Room state & query parameters (?room=..., ?id=..., ?join=..., ?peer=...)
   // Automatically populate Room Code from URL query parameters if present
-  const detectedRoomParam = (() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const q =
-        params.get("room") ||
-        params.get("id") ||
-        params.get("join") ||
-        params.get("connect") ||
-        params.get("peer");
-      return q ? q.trim().toUpperCase() : null;
-    } catch {
-      return null;
-    }
-  })();
+  const detectedParams = useRef(
+    (() => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const room = params.get("room") || params.get("id") || params.get("join");
+        const peer = params.get("peer") || params.get("connect");
+        return {
+          room: room ? room.trim().toUpperCase() : null,
+          peer: peer ? peer.trim() : null,
+        };
+      } catch {
+        return { room: null, peer: null };
+      }
+    })()
+  ).current;
 
   const [roomId, setRoomId] = useState<string>(() => {
-    if (detectedRoomParam) return detectedRoomParam;
+    if (detectedParams.room) return detectedParams.room;
     return generateRoomCode();
   });
 
   const [inputNewRoom, setInputNewRoom] = useState<string>(() => {
-    if (detectedRoomParam) return detectedRoomParam;
+    if (detectedParams.room) return detectedParams.room;
     return "";
   });
 
@@ -78,7 +79,7 @@ export default function App() {
 
   // Show name prompt on arrival or whenever joining a room via link/query/QR
   const [showNamePrompt, setShowNamePrompt] = useState<boolean>(() => {
-    if (detectedRoomParam) return true;
+    if (detectedParams.room) return true;
     return !sessionStorage.getItem("sensend_name_set");
   });
   const [showQRModal, setShowQRModal] = useState(false);
@@ -114,13 +115,14 @@ export default function App() {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   };
 
-  // Sync URL query parameter when room changes (?room=...)
+  // Sync URL query parameter when room changes (?room=...&peer=...)
   useEffect(() => {
     if (roomId) {
-      const newUrl = `${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
+      const peerParam = peerId ? `&peer=${encodeURIComponent(peerId)}` : "";
+      const newUrl = `${window.location.pathname}?room=${encodeURIComponent(roomId)}${peerParam}`;
       window.history.replaceState({ roomId }, "", newUrl);
     }
-  }, [roomId]);
+  }, [roomId, peerId]);
 
   // Network online/offline listeners
   useEffect(() => {
@@ -175,10 +177,6 @@ export default function App() {
       onMyPeerId: (assignedId) => {
         setPeerId(assignedId);
         setConnectionState("connected");
-        // If current roomId is another peer's ID directly, connect to it
-        if (roomId && roomId !== assignedId) {
-          manager.connectToPeer(roomId);
-        }
       },
       onPeerConnected: (connectedPeerId, connectedPeerName, peerDevType) => {
         const dName = connectedPeerName || `Peer-${connectedPeerId.slice(0, 4)}`;
@@ -333,7 +331,7 @@ export default function App() {
     });
 
     p2pRef.current = manager;
-    manager.connectSignaling();
+    manager.connectSignaling(detectedParams.peer || undefined);
 
     return () => {
       manager.destroy();
@@ -593,8 +591,9 @@ export default function App() {
                   <span className="text-slate-500 font-medium">Room Invite Link</span>
                   <button
                     onClick={() => {
+                      const peerParam = peerId ? `&peer=${encodeURIComponent(peerId)}` : "";
                       navigator.clipboard.writeText(
-                        `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`
+                        `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}${peerParam}`
                       );
                       setShowRoomSwitchPopover(false);
                       notify("Link Copied", "Share invite link with nearby peers", "info");
@@ -794,29 +793,31 @@ export default function App() {
         onClose={() => setShowScannerModal(false)}
         onScanned={(scannedText) => {
           const raw = scannedText.trim();
-          let target = raw;
+          let targetRoom = "";
+          let targetPeer = "";
 
           try {
             const url = new URL(raw);
-            const queryTarget =
+            const queryRoom =
               url.searchParams.get("room") ||
-              url.searchParams.get("connect") ||
+              url.searchParams.get("id") ||
+              url.searchParams.get("join");
+            const queryPeer =
               url.searchParams.get("peer") ||
-              url.searchParams.get("join") ||
-              url.searchParams.get("id");
-            if (queryTarget) {
-              target = queryTarget.trim();
-            }
-          } catch {}
+              url.searchParams.get("connect");
+            if (queryRoom) targetRoom = queryRoom.trim().toUpperCase();
+            if (queryPeer) targetPeer = queryPeer.trim();
+          } catch {
+            targetRoom = raw.toUpperCase();
+          }
 
-          if (target) {
-            const cleaned = target.toUpperCase();
-            setRoomId(cleaned);
-            setInputNewRoom(cleaned);
-            p2pRef.current?.setRoom(cleaned);
+          if (targetRoom) {
+            setRoomId(targetRoom);
+            setInputNewRoom(targetRoom);
+            p2pRef.current?.setRoom(targetRoom, targetPeer || undefined);
             setShowScannerModal(false);
             setShowNamePrompt(true);
-            notify("Scanned Room", `Room code ${cleaned} loaded`, "info");
+            notify("Scanned Room", `Joined room ${targetRoom}`, "info");
           }
         }}
         onErrorNotice={(title, msg) => notify(title, msg, "error")}

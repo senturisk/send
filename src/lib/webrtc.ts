@@ -53,6 +53,10 @@ export class P2PConnectionManager {
   private cancelledFiles = new Set<string>();
   private destroyed = false;
 
+  private isHost = false;
+  private pendingPeerConnects = new Set<string>();
+  private targetRemotePeerId?: string;
+
   constructor(
     initialPeerId: string,
     peerName: string,
@@ -79,76 +83,170 @@ export class P2PConnectionManager {
     return this.peerId;
   }
 
+  public getRoomHostId(): string {
+    const clean = (this.roomId || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 16);
+    return `sensend_rm_${clean || "default"}`;
+  }
+
   public setCallbacks(callbacks: TransferCallbacks) {
     this.callbacks = { ...this.callbacks, ...callbacks };
   }
 
   /**
-   * Initialize default PeerJS (NO custom ID parameters - relies on PeerJS broker)
+   * Initialize default PeerJS with room anchor or direct peer connections
    */
-  public connectSignaling(_wsUrl?: string) {
-    if (this.destroyed || this.peer) return;
+  public connectSignaling(targetRemotePeerId?: string) {
+    if (this.destroyed) return;
+
+    if (targetRemotePeerId && targetRemotePeerId !== this.peerId) {
+      this.targetRemotePeerId = targetRemotePeerId;
+      this.pendingPeerConnects.add(targetRemotePeerId);
+    }
+
+    if (this.peer && this.peer.open) {
+      if (this.targetRemotePeerId) {
+        this.connectToPeer(this.targetRemotePeerId);
+      }
+      return;
+    }
+
+    const hostId = this.getRoomHostId();
+    this.initPeerAsHostOrClient(hostId);
+  }
+
+  /**
+   * First attempt to bind as the room anchor host on the default PeerJS broker.
+   * If the host is already online (unavailable-id), join as a client peer and connect to the host.
+   */
+  private initPeerAsHostOrClient(hostId: string) {
+    if (this.destroyed) return;
 
     try {
-      // Default PeerJS initialization with default broker & settings (no external turn/ICE servers)
-      this.peer = new Peer({
-        debug: 0,
-      });
+      this.peer = new Peer(hostId, { debug: 0 });
+      let hostClaimed = false;
 
       this.peer.on("open", (assignedId: string) => {
+        hostClaimed = true;
+        this.isHost = true;
         this.peerId = assignedId;
-        this.callbacks.onMyPeerId?.(assignedId);
-
-        // Announce presence in room and connect to peers discovered in this room
-        this.joinRoomPresence();
-        this.startPresenceHeartbeat();
-        this.startPingLoop();
-
-        // Broadcast presence locally via BroadcastChannel
-        this.broadcastLocal({
-          type: "local_presence_join",
-          peerId: this.peerId,
-          peerName: this.peerName,
-          deviceType: this.detectDeviceType(),
-        });
-      });
-
-      // Handle incoming connections from any peer
-      this.peer.on("connection", (conn: DataConnection) => {
-        this.setupDataConnection(conn, conn.peer);
+        this.onPeerReady(assignedId);
       });
 
       this.peer.on("error", (err: any) => {
         const errType = err?.type;
-        const msg = String(err?.message || err || "");
-        if (
-          errType === "peer-unavailable" ||
-          errType === "invalid-id" ||
-          msg.includes("Could not connect to peer")
-        ) {
-          // Normal when a peer is offline or disconnected
-          const target = (err as any)?.peer;
-          if (target) {
-            this.connections.delete(target);
-            this.peerMeta.delete(target);
-            this.callbacks.onPeerDisconnected?.(target);
-          }
+        if (errType === "unavailable-id" && !hostClaimed) {
+          // Room host is already online! Join as client and connect to host
+          this.isHost = false;
+          try {
+            this.peer?.destroy();
+          } catch (e) {}
+          this.peer = null;
+          this.initPeerAsClient(hostId);
           return;
         }
-        console.warn("PeerJS notice:", errType || msg);
+
+        this.handlePeerError(err);
+      });
+
+      this.peer.on("connection", (conn: DataConnection) => {
+        this.setupDataConnection(conn, conn.peer);
       });
 
       this.peer.on("disconnected", () => {
-        if (!this.destroyed && this.peer) {
-          try {
-            this.peer.reconnect();
-          } catch (e) {
-            // silent reconnect attempt
-          }
+        this.handlePeerDisconnect();
+      });
+    } catch (err) {
+      this.initPeerAsClient(hostId);
+    }
+  }
+
+  /**
+   * Join as a standard client peer on the default PeerJS broker
+   */
+  private initPeerAsClient(hostId: string) {
+    if (this.destroyed) return;
+
+    try {
+      this.peer = new Peer({ debug: 0 });
+
+      this.peer.on("open", (assignedId: string) => {
+        this.peerId = assignedId;
+        this.onPeerReady(assignedId);
+
+        // Connect directly to the room host anchor
+        this.connectToPeer(hostId);
+
+        // If a specific peer was specified via QR code/URL, connect to it as well
+        if (this.targetRemotePeerId && this.targetRemotePeerId !== assignedId) {
+          this.connectToPeer(this.targetRemotePeerId);
         }
       });
-    } catch (err: any) {
-      console.warn("PeerJS initialization error:", err);
+
+      this.peer.on("error", (err: any) => {
+        this.handlePeerError(err);
+      });
+
+      this.peer.on("connection", (conn: DataConnection) => {
+        this.setupDataConnection(conn, conn.peer);
+      });
+
+      this.peer.on("disconnected", () => {
+        this.handlePeerDisconnect();
+      });
+    } catch (err) {
+      console.warn("PeerJS client creation error:", err);
+    }
+  }
+
+  private onPeerReady(assignedId: string) {
+    this.callbacks.onMyPeerId?.(assignedId);
+
+    // Drain queued peer connects
+    for (const pendingId of this.pendingPeerConnects) {
+      if (pendingId !== assignedId) {
+        this.connectToPeer(pendingId);
+      }
+    }
+    this.pendingPeerConnects.clear();
+
+    // Start HTTP room presence & local broadcast channel
+    this.joinRoomPresence();
+    this.startPresenceHeartbeat();
+    this.startPingLoop();
+
+    // Broadcast presence locally via BroadcastChannel
+    this.broadcastLocal({
+      type: "local_presence_join",
+      peerId: assignedId,
+      peerName: this.peerName,
+      deviceType: this.detectDeviceType(),
+    });
+  }
+
+  private handlePeerError(err: any) {
+    const errType = err?.type;
+    const msg = String(err?.message || err || "");
+    if (
+      errType === "peer-unavailable" ||
+      errType === "invalid-id" ||
+      msg.includes("Could not connect to peer")
+    ) {
+      const target = (err as any)?.peer;
+      if (target) {
+        this.connections.delete(target);
+        this.peerMeta.delete(target);
+        this.callbacks.onPeerDisconnected?.(target);
+      }
+      return;
+    }
+    console.warn("PeerJS notice:", errType || msg);
+  }
+
+  private handlePeerDisconnect() {
+    if (!this.destroyed && this.peer) {
+      try {
+        this.peer.reconnect();
+      } catch (e) {}
     }
   }
 
@@ -179,7 +277,7 @@ export class P2PConnectionManager {
   /**
    * Update active room and reconfigure presence & BroadcastChannel
    */
-  public setRoom(newRoomId: string) {
+  public setRoom(newRoomId: string, targetPeerId?: string) {
     if (this.roomId === newRoomId) return;
     this.disconnectAll();
     this.roomId = newRoomId;
@@ -194,7 +292,21 @@ export class P2PConnectionManager {
       };
     } catch (e) {}
 
-    this.joinRoomPresence();
+    // Destroy old peer and initialize with new room host anchor
+    if (this.peer) {
+      try {
+        this.peer.destroy();
+      } catch (e) {}
+      this.peer = null;
+    }
+
+    if (targetPeerId) {
+      this.targetRemotePeerId = targetPeerId;
+      this.pendingPeerConnects.add(targetPeerId);
+    }
+
+    const hostId = this.getRoomHostId();
+    this.initPeerAsHostOrClient(hostId);
   }
 
   /**
@@ -214,7 +326,16 @@ export class P2PConnectionManager {
         return;
       }
     }
-    if (!this.peer || this.peer.destroyed) {
+
+    // If our Peer is not yet open or ready, queue the connection
+    if (!this.peer || !this.peer.open || this.peer.destroyed) {
+      this.pendingPeerConnects.add(remotePeerId);
+      if (remotePeerName) {
+        this.peerMeta.set(remotePeerId, {
+          peerName: remotePeerName,
+          deviceType: remoteDeviceType || "desktop",
+        });
+      }
       return;
     }
 
