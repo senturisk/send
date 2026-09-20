@@ -37,12 +37,52 @@ export const ChatView: React.FC<ChatViewProps> = ({
 }) => {
   const [inputText, setInputText] = useState("");
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [hasUnreadBelow, setHasUnreadBelow] = useState(false);
+
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimeoutRef = useRef<any>(null);
+  const prevMessagesCountRef = useRef(messages.length);
+  const isAtBottomRef = useRef(true);
 
+  // Monitor scroll position
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    // Consider user at bottom if within 60px of the bottom edge
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceToBottom < 60;
+    setIsAtBottom(atBottom);
+    isAtBottomRef.current = atBottom;
+
+    if (atBottom) {
+      setHasUnreadBelow(false);
+    }
+  };
+
+  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+    setIsAtBottom(true);
+    isAtBottomRef.current = true;
+    setHasUnreadBelow(false);
+  };
+
+  // Only auto-scroll if user is already at the bottom or sent a message themselves
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const isNewMessage = messages.length > prevMessagesCountRef.current;
+    const lastMsg = messages[messages.length - 1];
+    const isSentBySelf = lastMsg?.isSelf;
+
+    if (isSentBySelf || isAtBottomRef.current) {
+      scrollToBottom(messages.length <= 2 ? "auto" : "smooth");
+    } else if (isNewMessage) {
+      setHasUnreadBelow(true);
+    }
+
+    prevMessagesCountRef.current = messages.length;
   }, [messages, typingUsers, activeTransfers]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -159,7 +199,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
       </AnimatePresence>
 
       {/* Messages Scroll Area */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 m3-surface-bg">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        className="relative flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 m3-surface-bg"
+      >
         {messages.length === 0 ? (
           <div className="h-full min-h-[300px] flex flex-col items-center justify-center text-center p-6">
             <img
@@ -257,6 +301,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Floating Scroll to Bottom Indicator */}
+      <AnimatePresence>
+        {!isAtBottom && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.85, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.85, y: 10 }}
+            transition={{ duration: 0.2 }}
+            className="absolute bottom-20 right-6 z-30"
+          >
+            <button
+              onClick={() => scrollToBottom("smooth")}
+              className="px-3 py-2 rounded-full bg-white hover:bg-slate-50 text-slate-700 shadow-md border border-slate-200/80 flex items-center gap-1.5 text-xs font-medium cursor-pointer transition-all hover:shadow-lg"
+              title="Scroll to bottom"
+            >
+              {hasUnreadBelow && (
+                <span className="w-2 h-2 rounded-full bg-[#0B57D0] animate-pulse" />
+              )}
+              <SolarIcon name="alt-arrow-down-bold-duotone" className="w-4 h-4 text-[#0B57D0]" />
+              <span>Latest</span>
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Typing Indicator Bar */}
       {otherTypingUsers.length > 0 && (
