@@ -22,12 +22,6 @@ export interface TransferCallbacks {
 }
 
 const CHUNK_SIZE = 32768; // 32 KB chunk size for fast, smooth WebRTC streaming
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:global.stun.twilio.com:3478" },
-];
 
 interface IncomingFileAssembly {
   meta: FileMetadata;
@@ -96,23 +90,16 @@ export class P2PConnectionManager {
     if (this.destroyed || this.peer) return;
 
     try {
-      // Default PeerJS initialization without custom ID parameter
+      // Default PeerJS initialization with default broker & settings (no external turn/ICE servers)
       this.peer = new Peer({
         debug: 0,
-        config: {
-          iceServers: ICE_SERVERS,
-        },
       });
 
       this.peer.on("open", (assignedId: string) => {
         this.peerId = assignedId;
         this.callbacks.onMyPeerId?.(assignedId);
 
-        // If room code was specified and is another peer's ID, connect directly!
-        if (this.roomId && this.roomId !== assignedId) {
-          this.connectToPeer(this.roomId);
-        }
-
+        // Announce presence in room and connect to peers discovered in this room
         this.joinRoomPresence();
         this.startPresenceHeartbeat();
         this.startPingLoop();
@@ -140,8 +127,12 @@ export class P2PConnectionManager {
           msg.includes("Could not connect to peer")
         ) {
           // Normal when a peer is offline or disconnected
-          const target = (err as any)?.peer || this.roomId;
-          this.callbacks.onPeerUnavailable?.(target);
+          const target = (err as any)?.peer;
+          if (target) {
+            this.connections.delete(target);
+            this.peerMeta.delete(target);
+            this.callbacks.onPeerDisconnected?.(target);
+          }
           return;
         }
         console.warn("PeerJS notice:", errType || msg);
@@ -172,6 +163,41 @@ export class P2PConnectionManager {
   }
 
   /**
+   * Disconnect all active peer connections without destroying the Peer instance
+   */
+  public disconnectAll() {
+    for (const [id, conn] of this.connections.entries()) {
+      try {
+        conn.close();
+      } catch (e) {}
+      this.callbacks.onPeerDisconnected?.(id);
+    }
+    this.connections.clear();
+    this.peerMeta.clear();
+  }
+
+  /**
+   * Update active room and reconfigure presence & BroadcastChannel
+   */
+  public setRoom(newRoomId: string) {
+    if (this.roomId === newRoomId) return;
+    this.disconnectAll();
+    this.roomId = newRoomId;
+
+    try {
+      if (this.broadcastChannel) {
+        this.broadcastChannel.close();
+      }
+      this.broadcastChannel = new BroadcastChannel(`sensend_room_${newRoomId}`);
+      this.broadcastChannel.onmessage = (event) => {
+        this.handleBroadcastMessage(event.data);
+      };
+    } catch (e) {}
+
+    this.joinRoomPresence();
+  }
+
+  /**
    * Connect to another peer directly using their default PeerJS ID
    */
   public connectToPeer(
@@ -179,8 +205,14 @@ export class P2PConnectionManager {
     remotePeerName?: string,
     remoteDeviceType?: any
   ) {
-    if (!remotePeerId || remotePeerId === this.peerId || this.connections.has(remotePeerId)) {
+    if (!remotePeerId || remotePeerId === this.peerId) {
       return;
+    }
+    if (this.connections.has(remotePeerId)) {
+      const existingConn = this.connections.get(remotePeerId);
+      if (existingConn && existingConn.open) {
+        return;
+      }
     }
     if (!this.peer || this.peer.destroyed) {
       return;
@@ -214,24 +246,39 @@ export class P2PConnectionManager {
     expectedName?: string,
     expectedDevice?: any
   ) {
-    let resolvedPeerId = remotePeerId || conn.peer;
+    const targetPeerId = remotePeerId || conn.peer;
+    if (targetPeerId) {
+      this.connections.set(targetPeerId, conn);
+    }
 
     const onOpen = () => {
-      // Send immediate handshake with our credentials
-      conn.send({
-        type: "handshake",
-        peerId: this.peerId,
-        peerName: this.peerName,
-        deviceType: this.detectDeviceType(),
-        roomId: this.roomId,
-      });
+      const id = conn.peer || targetPeerId;
+      this.connections.set(id, conn);
 
-      if (resolvedPeerId) {
-        this.connections.set(resolvedPeerId, conn);
-        const meta = this.peerMeta.get(resolvedPeerId);
-        const name = meta?.peerName || expectedName || `Peer-${resolvedPeerId.slice(0, 4)}`;
-        const dev = meta?.deviceType || expectedDevice || "desktop";
-        this.callbacks.onPeerConnected?.(resolvedPeerId, name, dev);
+      // Send immediate handshake with our credentials
+      try {
+        conn.send({
+          type: "handshake",
+          peerId: this.peerId,
+          peerName: this.peerName,
+          deviceType: this.detectDeviceType(),
+          roomId: this.roomId,
+        });
+      } catch (e) {}
+
+      const meta = this.peerMeta.get(id);
+      const name = meta?.peerName || expectedName || `Peer-${id.slice(0, 4)}`;
+      const dev = meta?.deviceType || expectedDevice || "desktop";
+      this.callbacks.onPeerConnected?.(id, name, dev);
+
+      // Send mesh peer list of other connected peers
+      const otherPeers = Array.from(this.peerMeta.entries())
+        .filter(([pId]) => pId !== id && pId !== this.peerId && this.connections.has(pId))
+        .map(([pId, m]) => ({ peerId: pId, peerName: m.peerName, deviceType: m.deviceType }));
+      if (otherPeers.length > 0) {
+        try {
+          conn.send({ type: "mesh_peer_list", peers: otherPeers });
+        } catch (e) {}
       }
     };
 
@@ -242,24 +289,22 @@ export class P2PConnectionManager {
     }
 
     conn.on("data", (data: any) => {
-      this.handleIncomingData(data, conn, (id) => {
-        resolvedPeerId = id;
-      });
+      this.handleIncomingData(data, conn);
     });
 
     conn.on("close", () => {
-      if (resolvedPeerId) {
-        this.connections.delete(resolvedPeerId);
-        this.peerMeta.delete(resolvedPeerId);
-        this.callbacks.onPeerDisconnected?.(resolvedPeerId);
-      }
+      const id = conn.peer || targetPeerId;
+      this.connections.delete(id);
+      this.peerMeta.delete(id);
+      this.callbacks.onPeerDisconnected?.(id);
     });
 
     conn.on("error", (err) => {
-      console.warn("DataConnection error with " + resolvedPeerId, err);
-      if (resolvedPeerId) {
-        this.connections.delete(resolvedPeerId);
-      }
+      console.warn("DataConnection error with " + (conn.peer || targetPeerId), err);
+      const id = conn.peer || targetPeerId;
+      this.connections.delete(id);
+      this.peerMeta.delete(id);
+      this.callbacks.onPeerDisconnected?.(id);
     });
   }
 
@@ -268,8 +313,7 @@ export class P2PConnectionManager {
    */
   private handleIncomingData(
     data: any,
-    conn: DataConnection,
-    setResolvedPeerId: (id: string) => void
+    conn: DataConnection
   ) {
     if (!data || typeof data !== "object") return;
     const type = data.type;
@@ -278,7 +322,6 @@ export class P2PConnectionManager {
       const { peerId, peerName, deviceType } = data;
       if (!peerId || peerId === this.peerId) return;
 
-      setResolvedPeerId(peerId);
       this.connections.set(peerId, conn);
       this.peerMeta.set(peerId, {
         peerName: peerName || `Peer-${peerId.slice(0, 4)}`,
@@ -291,15 +334,40 @@ export class P2PConnectionManager {
         deviceType || "desktop"
       );
 
+      // Respond with handshake_ack so initiator has our profile
+      try {
+        conn.send({
+          type: "handshake_ack",
+          peerId: this.peerId,
+          peerName: this.peerName,
+          deviceType: this.detectDeviceType(),
+        });
+      } catch (e) {}
+
       // Share existing peers with newly connected peer for mesh connectivity
       const otherPeers = Array.from(this.peerMeta.entries())
-        .filter(([id]) => id !== peerId && id !== this.peerId)
+        .filter(([id]) => id !== peerId && id !== this.peerId && this.connections.has(id))
         .map(([id, m]) => ({ peerId: id, peerName: m.peerName, deviceType: m.deviceType }));
       if (otherPeers.length > 0) {
         try {
           conn.send({ type: "mesh_peer_list", peers: otherPeers });
         } catch (e) {}
       }
+    } else if (type === "handshake_ack") {
+      const { peerId, peerName, deviceType } = data;
+      if (!peerId || peerId === this.peerId) return;
+
+      this.connections.set(peerId, conn);
+      this.peerMeta.set(peerId, {
+        peerName: peerName || `Peer-${peerId.slice(0, 4)}`,
+        deviceType: deviceType || "desktop",
+      });
+
+      this.callbacks.onPeerConnected?.(
+        peerId,
+        peerName || `Peer-${peerId.slice(0, 4)}`,
+        deviceType || "desktop"
+      );
     } else if (type === "mesh_peer_list") {
       if (Array.isArray(data.peers)) {
         for (const p of data.peers) {

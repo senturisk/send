@@ -41,25 +41,33 @@ export default function App() {
   const [peerId, setPeerId] = useState(userConfig.peerId);
   const [deviceType] = useState<DeviceType>(userConfig.deviceType);
 
-  // Room state & query parameters (?room=...)
-  // Room codes are Peer IDs
-  const [roomId, setRoomId] = useState<string>(() => {
-    const params = new URLSearchParams(window.location.search);
-    const queryRoom =
-      params.get("room") ||
-      params.get("join") ||
-      params.get("connect") ||
-      params.get("peer");
-    if (queryRoom) {
-      return queryRoom.trim();
-    }
+  // Room state & query parameters (?room=..., ?id=..., ?join=..., ?peer=...)
+  // Automatically populate Room Code from URL query parameters if present
+  const detectedRoomParam = (() => {
     try {
-      localStorage.removeItem("sensend_active_room");
-    } catch {}
+      const params = new URLSearchParams(window.location.search);
+      const q =
+        params.get("room") ||
+        params.get("id") ||
+        params.get("join") ||
+        params.get("connect") ||
+        params.get("peer");
+      return q ? q.trim().toUpperCase() : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const [roomId, setRoomId] = useState<string>(() => {
+    if (detectedRoomParam) return detectedRoomParam;
+    return generateRoomCode();
+  });
+
+  const [inputNewRoom, setInputNewRoom] = useState<string>(() => {
+    if (detectedRoomParam) return detectedRoomParam;
     return "";
   });
 
-  const [inputNewRoom, setInputNewRoom] = useState("");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [serverPing, setServerPing] = useState(0);
   const [peers, setPeers] = useState<Peer[]>([]);
@@ -68,8 +76,11 @@ export default function App() {
   const [activeTransfers, setActiveTransfers] = useState<FileTransferProgress[]>([]);
   const [notifications, setNotifications] = useState<TorchNotificationItem[]>([]);
 
-  // Modals & Sheets
-  const [showNamePrompt, setShowNamePrompt] = useState(true);
+  // Show name prompt on arrival or whenever joining a room via link/query/QR
+  const [showNamePrompt, setShowNamePrompt] = useState<boolean>(() => {
+    if (detectedRoomParam) return true;
+    return !sessionStorage.getItem("sensend_name_set");
+  });
   const [showQRModal, setShowQRModal] = useState(false);
   const [showScannerModal, setShowScannerModal] = useState(false);
   const [showBridgeModal, setShowBridgeModal] = useState(false);
@@ -103,15 +114,13 @@ export default function App() {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   };
 
-  // Sync URL query parameter when room changes
+  // Sync URL query parameter when room changes (?room=...)
   useEffect(() => {
-    if (roomId && peerId && roomId !== peerId) {
+    if (roomId) {
       const newUrl = `${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
       window.history.replaceState({ roomId }, "", newUrl);
-    } else {
-      window.history.replaceState({}, "", window.location.pathname);
     }
-  }, [roomId, peerId]);
+  }, [roomId]);
 
   // Network online/offline listeners
   useEffect(() => {
@@ -166,15 +175,10 @@ export default function App() {
       onMyPeerId: (assignedId) => {
         setPeerId(assignedId);
         setConnectionState("connected");
-        setRoomId((currentRoom) => {
-          if (!currentRoom || currentRoom.startsWith("S-") || currentRoom.startsWith("SEN-")) {
-            return assignedId;
-          }
-          if (currentRoom !== assignedId) {
-            manager.connectToPeer(currentRoom);
-          }
-          return currentRoom;
-        });
+        // If current roomId is another peer's ID directly, connect to it
+        if (roomId && roomId !== assignedId) {
+          manager.connectToPeer(roomId);
+        }
       },
       onPeerConnected: (connectedPeerId, connectedPeerName, peerDevType) => {
         const dName = connectedPeerName || `Peer-${connectedPeerId.slice(0, 4)}`;
@@ -219,18 +223,6 @@ export default function App() {
         setPeers((prev) =>
           prev.map((p) => (p.peerId === updatedPeerId ? { ...p, peerName: newName } : p))
         );
-      },
-
-      onPeerUnavailable: (unavailablePeerId) => {
-        if (unavailablePeerId && unavailablePeerId === roomId && roomId !== peerId) {
-          notify(
-            "Host Offline",
-            "The room host is no longer online. Switched to your own room.",
-            "info"
-          );
-          setRoomId(peerId);
-          window.history.replaceState({}, "", window.location.pathname);
-        }
       },
 
       onPeerDisconnected: (disconnectedPeerId) => {
@@ -440,29 +432,59 @@ export default function App() {
     await deleteRoomMessageByFileId(fileId);
   };
 
-  const handleRoomSwitch = (e: React.FormEvent) => {
-    e.preventDefault();
-    const target = inputNewRoom.trim();
+  const handleDeleteMultipleVaultFiles = async (fileIds: string[]) => {
+    const idsSet = new Set(fileIds);
+    setMessages((prev) =>
+      prev.filter((msg) => !idsSet.has(msg.id) && (!msg.fileMeta || !idsSet.has(msg.fileMeta.id)))
+    );
+    setActiveTransfers((prev) => prev.filter((t) => !idsSet.has(t.fileId)));
+  };
+
+  const handleClearAllVaultFiles = async () => {
+    setMessages((prev) => prev.filter((msg) => msg.type !== "file"));
+    setActiveTransfers([]);
+  };
+
+  const handleRoomSwitch = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const target = (inputNewRoom.trim() || roomId).toUpperCase();
     if (target) {
       setRoomId(target);
-      p2pRef.current?.connectToPeer(target);
-      setInputNewRoom("");
+      setInputNewRoom(target);
+      p2pRef.current?.setRoom(target);
       setShowRoomSwitchPopover(false);
       setShowMobilePeersDrawer(false);
-      setShowNamePrompt(false);
-      notify("Switched Room", `Connected to room ${target}`, "info");
+      notify("Switched Room", `Active room is now ${target}`, "info");
     }
   };
 
-  const handleNameConfirmed = (chosenName: string) => {
+  const handleCreateNewRoom = () => {
+    const newRoom = generateRoomCode();
+    setRoomId(newRoom);
+    setInputNewRoom(newRoom);
+    p2pRef.current?.setRoom(newRoom);
+    setShowRoomSwitchPopover(false);
+    notify("New Room Created", `Switched to fresh room ${newRoom}`, "info");
+  };
+
+  const handleNameConfirmed = (chosenName: string, confirmedRoomId: string) => {
+    sessionStorage.setItem("sensend_name_set", "true");
     setPeerName(chosenName);
     saveUserName(chosenName);
     p2pRef.current?.updatePeerName(chosenName);
+
+    const targetRoom = (confirmedRoomId.trim() || roomId).toUpperCase();
+    if (targetRoom !== roomId) {
+      setRoomId(targetRoom);
+      setInputNewRoom(targetRoom);
+      p2pRef.current?.setRoom(targetRoom);
+    }
     setShowNamePrompt(false);
-    notify("Display Name Set", `Joined room ${roomId} as "${chosenName}"`, "success");
+    notify("Connected", `Joined room ${targetRoom} as "${chosenName}"`, "success");
   };
 
   const handleUpdateName = (newName: string) => {
+    sessionStorage.setItem("sensend_name_set", "true");
     setPeerName(newName);
     saveUserName(newName);
     p2pRef.current?.updatePeerName(newName);
@@ -500,13 +522,16 @@ export default function App() {
           </div>
         </div>
 
-        {/* Center: Material You Dynamic Room Pill */}
+        {/* Center: Distinct Room Code Pill */}
         <div className="relative">
           <button
             id="btn-room-badge"
-            onClick={() => setShowRoomSwitchPopover(!showRoomSwitchPopover)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200/80 border border-slate-200/60 text-xs transition-colors"
-            title={`Room / Peer ID: ${roomId || peerId || "Connecting..."}`}
+            onClick={() => {
+              setInputNewRoom(roomId);
+              setShowRoomSwitchPopover(!showRoomSwitchPopover);
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200/80 border border-slate-200/70 text-xs transition-colors cursor-pointer shadow-2xs"
+            title={`Active Room Code: ${roomId}`}
           >
             <span
               className={`w-2 h-2 rounded-full ${
@@ -517,90 +542,83 @@ export default function App() {
                   : "bg-blue-500 animate-pulse"
               }`}
             />
-            <span className="font-semibold text-slate-700 max-w-[140px] truncate">
-              {roomId
-                ? roomId === peerId
-                  ? `My Room (${roomId.slice(0, 6)}…)`
-                  : `Room: ${roomId.slice(0, 8)}…`
-                : peerId
-                ? `My Room (${peerId.slice(0, 6)}…)`
-                : "Connecting..."}
+            <span className="font-mono font-bold text-slate-800 tracking-wider">
+              {roomId ? `Room: ${roomId}` : "Connecting..."}
             </span>
             <SolarIcon name="alt-arrow-down-bold-duotone" className="w-3 h-3 text-slate-400" />
           </button>
 
-          {/* Quick Room Switcher Popover */}
+          {/* Room Switcher Popover */}
           {showRoomSwitchPopover && (
             <div
-              className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-80 p-4 rounded-2xl bg-white border border-slate-200 shadow-xl z-50 animate-in fade-in zoom-in-95 duration-150"
+              className="absolute top-full mt-2 left-1/2 -translate-x-1/2 w-84 p-4 rounded-3xl bg-white border border-slate-200 shadow-2xl z-50 animate-in fade-in zoom-in-95 duration-150"
               onClick={(e) => e.stopPropagation()}
             >
-              <form onSubmit={handleRoomSwitch} className="space-y-2">
+              <form onSubmit={handleRoomSwitch} className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="text-xs font-semibold text-slate-700">Join Room (Peer ID)</div>
-                  {roomId && peerId && roomId !== peerId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRoomId(peerId);
-                        setShowRoomSwitchPopover(false);
-                        notify("Switched", "Back to your own room", "info");
-                      }}
-                      className="text-[11px] text-[#0B57D0] hover:underline font-medium"
-                    >
-                      Switch to My Room
-                    </button>
-                  )}
+                  <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <SolarIcon name="hashtag-bold-duotone" className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Room Code</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCreateNewRoom}
+                    className="text-[11px] text-[#0B57D0] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <SolarIcon name="refresh-bold-duotone" className="w-3 h-3" />
+                    <span>New Room</span>
+                  </button>
                 </div>
                 <div className="flex gap-1.5">
                   <input
                     type="text"
-                    placeholder="Enter Peer ID..."
+                    placeholder="e.g. 7K4B9X..."
                     value={inputNewRoom}
-                    onChange={(e) => setInputNewRoom(e.target.value)}
-                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    onChange={(e) => setInputNewRoom(e.target.value.toUpperCase())}
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 font-mono font-bold uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-[#0B57D0]/30 focus:border-[#0B57D0]"
                     autoFocus
                   />
                   <button
                     type="submit"
-                    className="px-3.5 py-1.5 rounded-xl bg-[#0B57D0] text-white text-xs font-medium hover:bg-[#084298] transition-colors"
+                    className="px-3.5 py-2 rounded-xl bg-[#0B57D0] hover:bg-blue-700 text-white text-xs font-semibold transition-colors cursor-pointer"
                   >
                     Join
                   </button>
                 </div>
               </form>
 
-              {/* Your Peer ID & Room Info */}
+              {/* Room Actions & Peer ID Separation */}
               <div className="mt-3.5 pt-3 border-t border-slate-100 space-y-2 text-[11px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-slate-400 font-mono">Your Peer ID</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Room Invite Link</span>
                   <button
                     onClick={() => {
+                      navigator.clipboard.writeText(
+                        `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`
+                      );
+                      setShowRoomSwitchPopover(false);
+                      notify("Link Copied", "Share invite link with nearby peers", "info");
+                    }}
+                    className="text-[#0B57D0] font-semibold hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <SolarIcon name="copy-bold-duotone" className="w-3 h-3" />
+                    Copy Link
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-50">
+                  <span className="text-slate-400 font-mono text-[10px]">Your Peer ID</span>
+                  <button
+                    onClick={() => {
+                      if (!peerId) return;
                       navigator.clipboard.writeText(peerId);
                       notify("Copied", "Your Peer ID copied to clipboard", "info");
                     }}
-                    className="text-slate-700 font-mono bg-slate-100 px-2 py-1 rounded-lg hover:bg-slate-200 flex items-center gap-1.5 max-w-[170px] truncate"
+                    className="text-slate-700 font-mono text-[10px] bg-slate-100 px-2 py-0.5 rounded-lg hover:bg-slate-200 flex items-center gap-1 max-w-[170px] truncate cursor-pointer"
                     title="Click to copy your Peer ID"
                   >
                     <span className="truncate">{peerId || "Generating..."}</span>
                     <SolarIcon name="copy-bold-duotone" className="w-3 h-3 text-slate-500 shrink-0" />
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400 font-mono">Room Link</span>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(
-                        `${window.location.origin}/?room=${encodeURIComponent(roomId || peerId)}`
-                      );
-                      setShowRoomSwitchPopover(false);
-                      notify("Link Copied", "Share with nearby peers", "info");
-                    }}
-                    className="text-[#0B57D0] font-medium hover:underline flex items-center gap-1"
-                  >
-                    <SolarIcon name="copy-bold-duotone" className="w-3 h-3" />
-                    Copy Link
                   </button>
                 </div>
               </div>
@@ -688,8 +706,10 @@ export default function App() {
                 currentPeerId={peerId}
                 currentPeerName={peerName}
                 currentDeviceType={deviceType}
+                currentRoomId={roomId}
                 serverPing={serverPing}
                 onUpdateName={handleUpdateName}
+                onOpenQR={() => setShowQRModal(true)}
               />
             </div>
 
@@ -747,8 +767,13 @@ export default function App() {
                 currentPeerId={peerId}
                 currentPeerName={peerName}
                 currentDeviceType={deviceType}
+                currentRoomId={roomId}
                 serverPing={serverPing}
                 onUpdateName={handleUpdateName}
+                onOpenQR={() => {
+                  setShowMobilePeersDrawer(false);
+                  setShowQRModal(true);
+                }}
               />
             </div>
           </div>
@@ -777,17 +802,21 @@ export default function App() {
               url.searchParams.get("room") ||
               url.searchParams.get("connect") ||
               url.searchParams.get("peer") ||
-              url.searchParams.get("join");
+              url.searchParams.get("join") ||
+              url.searchParams.get("id");
             if (queryTarget) {
               target = queryTarget.trim();
             }
           } catch {}
 
           if (target) {
-            setRoomId(target);
-            p2pRef.current?.connectToPeer(target);
+            const cleaned = target.toUpperCase();
+            setRoomId(cleaned);
+            setInputNewRoom(cleaned);
+            p2pRef.current?.setRoom(cleaned);
             setShowScannerModal(false);
-            notify("Connected", `Joined room ${target}`, "success");
+            setShowNamePrompt(true);
+            notify("Scanned Room", `Room code ${cleaned} loaded`, "info");
           }
         }}
         onErrorNotice={(title, msg) => notify(title, msg, "error")}
@@ -803,9 +832,10 @@ export default function App() {
           p2pRef.current?.pairPhoneBridge(d1, d2, roomId);
         }}
         onJoinRoom={(newR) => {
-          const target = newR.trim();
+          const target = newR.trim().toUpperCase();
           setRoomId(target);
-          p2pRef.current?.connectToPeer(target);
+          setInputNewRoom(target);
+          p2pRef.current?.setRoom(target);
         }}
         onNotify={notify}
       />
@@ -814,15 +844,18 @@ export default function App() {
         isOpen={showVaultModal}
         onClose={() => setShowVaultModal(false)}
         onDeleteFile={handleDeleteVaultFile}
+        onDeleteMultipleFiles={handleDeleteMultipleVaultFiles}
+        onClearAllFiles={handleClearAllVaultFiles}
         onNotify={notify}
       />
 
       {/* Display Name Prompt Modal upon entering room */}
       <NamePromptModal
         isOpen={showNamePrompt}
-        roomId={roomId}
+        roomId={inputNewRoom || roomId}
         currentName={peerName}
         onConfirm={handleNameConfirmed}
+        onClose={() => setShowNamePrompt(false)}
       />
     </div>
   );

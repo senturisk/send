@@ -122,6 +122,50 @@ export async function deleteVaultFile(id: string): Promise<void> {
 }
 
 /**
+ * Delete multiple files from vault and their chat messages
+ */
+export async function deleteMultipleVaultFiles(ids: string[]): Promise<void> {
+  if (!ids || ids.length === 0) return;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_FILES, "readwrite");
+    const store = tx.objectStore(STORE_FILES);
+    for (const id of ids) {
+      store.delete(id);
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    // Also delete associated room messages
+    for (const id of ids) {
+      await deleteRoomMessageByFileId(id);
+    }
+  } catch (err) {
+    console.warn("Could not delete multiple files from vault:", err);
+  }
+}
+
+/**
+ * Clear all stored files from vault and associated file messages
+ */
+export async function clearAllVaultFiles(): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_FILES, "readwrite");
+    const store = tx.objectStore(STORE_FILES);
+    store.clear();
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn("Could not clear all files from vault:", err);
+  }
+}
+
+/**
  * Delete messages associated with a file from IndexedDB room history
  */
 export async function deleteRoomMessageByFileId(fileId: string): Promise<void> {
@@ -197,9 +241,9 @@ export async function loadRoomMessages(roomId: string): Promise<ChatMessage[]> {
 }
 
 /**
- * Generate a clean, random alphanumeric peer ID / room code
+ * Generate a clean, random 6-8 digit alphanumeric ID / room code
  */
-export function generateAlphanumericCode(minLen: number = 4, maxLen: number = 6): string {
+export function generateAlphanumericCode(minLen: number = 6, maxLen: number = 8): string {
   const chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // High contrast, avoids confusing 0/O and 1/I
   const length = Math.floor(Math.random() * (maxLen - minLen + 1)) + minLen;
   let result = "";
@@ -210,7 +254,7 @@ export function generateAlphanumericCode(minLen: number = 4, maxLen: number = 6)
 }
 
 /**
- * Generate room code which is a peer ID
+ * Generate room code (6-8 digit alphanumeric ID)
  */
 export function generateRoomCode(): string {
   return generateAlphanumericCode(6, 8);

@@ -21,12 +21,10 @@ export const QRModal: React.FC<QRModalProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
 
-  // Room code is the peer ID
-  const activeCode = roomId || peerId;
-  const roomUrl = `${window.location.origin}/?room=${encodeURIComponent(activeCode)}`;
+  const roomUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomId)}`;
 
   useEffect(() => {
-    if (isOpen && activeCode) {
+    if (isOpen && roomId) {
       generateQRCode(roomUrl, {
         width: 280,
         darkColor: "#0B57D0",
@@ -35,7 +33,7 @@ export const QRModal: React.FC<QRModalProps> = ({
         .then((url) => setQrDataUrl(url))
         .catch(() => {});
     }
-  }, [isOpen, activeCode, roomUrl]);
+  }, [isOpen, roomId, roomUrl]);
 
   if (!isOpen) return null;
 
@@ -47,9 +45,9 @@ export const QRModal: React.FC<QRModalProps> = ({
   };
 
   const handleCopyCode = () => {
-    navigator.clipboard.writeText(activeCode);
+    navigator.clipboard.writeText(roomId);
     setCopiedCode(true);
-    onCopyNotice("Peer ID room code copied");
+    onCopyNotice("Room code copied to clipboard");
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
@@ -60,7 +58,7 @@ export const QRModal: React.FC<QRModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-sm rounded-3xl bg-white border border-slate-200/80 shadow-2xl p-6 relative flex flex-col items-center"
+        className="w-full max-w-sm rounded-3xl bg-white border border-slate-200/90 shadow-2xl p-6 relative flex flex-col items-center"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -71,23 +69,23 @@ export const QRModal: React.FC<QRModalProps> = ({
           <SolarIcon name="close-circle-bold-duotone" className="w-5 h-5" />
         </button>
 
-        <div className="w-10 h-10 rounded-xl mb-2 flex items-center justify-center">
-          <img src="/logo.svg" alt="Sen Send" className="w-9 h-9 object-contain" />
+        <div className="w-11 h-11 rounded-2xl bg-blue-50 text-[#0B57D0] mb-2 flex items-center justify-center border border-blue-100/80">
+          <SolarIcon name="qr-code-bold-duotone" className="w-6 h-6" />
         </div>
 
-        <h3 className="font-semibold text-slate-800 text-base mb-1">
+        <h3 className="font-bold text-slate-900 text-base mb-1">
           Scan to Join Room
         </h3>
-        <p className="text-xs text-slate-500 mb-4 text-center">
-          Open your camera or Sen Send scanner to connect to this peer instantly
+        <p className="text-xs text-slate-500 mb-4 text-center max-w-xs">
+          Scan with your phone or share the link to join room <strong className="font-mono text-slate-800">{roomId}</strong> directly.
         </p>
 
         {/* QR Code Presentation Box */}
-        <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 mb-4 shadow-xs">
+        <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-100 mb-4 shadow-xs">
           {qrDataUrl ? (
             <img
               src={qrDataUrl}
-              alt="Connection QR Code"
+              alt={`QR Code for Room ${roomId}`}
               className="w-48 h-48 rounded-xl object-contain"
             />
           ) : (
@@ -97,45 +95,53 @@ export const QRModal: React.FC<QRModalProps> = ({
           )}
         </div>
 
-        {/* Room Code = Peer ID */}
-        <div className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-3 mb-4 flex items-center justify-between gap-2">
+        {/* Room Code Badge */}
+        <div className="w-full bg-slate-50 border border-slate-200/80 rounded-2xl p-3 mb-3 flex items-center justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] uppercase font-semibold tracking-wider text-slate-400">
-              Room Code (Peer ID)
+            <div className="text-[10px] uppercase font-bold tracking-wider text-slate-500 flex items-center gap-1">
+              <SolarIcon name="hashtag-bold-duotone" className="w-3 h-3 text-blue-600" />
+              <span>Room Code</span>
             </div>
             <div
               onClick={handleCopyCode}
-              className="font-mono text-xs font-semibold text-slate-800 truncate cursor-pointer hover:text-[#0B57D0] transition-colors"
-              title="Click to copy"
+              className="font-mono text-sm font-bold text-slate-900 tracking-wider truncate cursor-pointer hover:text-[#0B57D0] transition-colors"
+              title="Click to copy room code"
             >
-              {activeCode || "Generating..."}
+              {roomId || "Generating..."}
             </div>
           </div>
           <button
             type="button"
             onClick={handleCopyCode}
-            className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-[#0B57D0] hover:bg-slate-100 transition-colors shrink-0 shadow-xs"
-            title="Copy Peer ID Room Code"
+            className="px-2.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-700 hover:text-[#0B57D0] hover:bg-slate-100 transition-colors shrink-0 shadow-2xs text-xs font-medium flex items-center gap-1"
+            title="Copy Room Code"
           >
             <SolarIcon
               name={copiedCode ? "check-circle-bold-duotone" : "copy-bold-duotone"}
-              className={`w-4 h-4 ${copiedCode ? "text-emerald-600" : ""}`}
+              className={`w-3.5 h-3.5 ${copiedCode ? "text-emerald-600" : ""}`}
             />
+            <span>{copiedCode ? "Copied" : "Copy Code"}</span>
           </button>
         </div>
 
-        {/* Action Button */}
+        {/* Action Button: Copy Room Link */}
         <button
           id="btn-copy-invite-link"
           onClick={handleCopyLink}
-          className="w-full py-2.5 px-4 rounded-full bg-[#0B57D0] hover:bg-[#084298] text-white font-medium text-xs flex items-center justify-center gap-2 shadow-sm transition-all"
+          className="w-full py-2.5 px-4 rounded-xl bg-[#0B57D0] hover:bg-[#084298] text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-sm shadow-blue-500/20 transition-all cursor-pointer"
         >
           <SolarIcon
             name={copiedLink ? "check-circle-bold-duotone" : "link-bold-duotone"}
             className="w-4 h-4 text-white"
           />
-          <span>{copiedLink ? "Link Copied!" : "Copy Room Link"}</span>
+          <span>{copiedLink ? "Link Copied to Clipboard!" : "Copy Full Invite Link"}</span>
         </button>
+
+        {peerId && (
+          <div className="mt-3 text-[10px] text-slate-600 font-mono truncate max-w-full">
+            Your Peer ID: {peerId.slice(0, 16)}…
+          </div>
+        )}
       </div>
     </div>
   );
